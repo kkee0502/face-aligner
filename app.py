@@ -4,7 +4,6 @@ import numpy as np
 from PIL import Image
 import io
 
-# [1. AI 엔진 로드]
 def load_ai_engine():
     try:
         import mediapipe as mp
@@ -14,16 +13,14 @@ def load_ai_engine():
         import mediapipe.python.solutions.face_mesh as mp_face_mesh
         return mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
 
-st.set_page_config(page_title="Universal Face Aligner", layout="wide")
-st.title("📸 AI 전각도 얼굴 정렬기 (측면 크기 보정)")
+st.set_page_config(page_title="Chin-Aligned Face Fixer", layout="wide")
+st.title("📸 AI 얼굴 크기 정렬기 (턱 위치 고정형)")
 
 if 'engine' not in st.session_state:
     st.session_state.engine = load_ai_engine()
-
 face_mesh = st.session_state.engine
 
-# [2. 핵심 정렬 함수]
-def align_face_universal(img_array):
+def align_face_by_chin(img_array):
     if img_array is None: return None
     h, w, _ = img_array.shape
     results = face_mesh.process(cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
@@ -33,48 +30,52 @@ def align_face_universal(img_array):
 
     landmarks = results.multi_face_landmarks[0].landmark
     
-    # 기준점 추출
+    # 1. 기준점 추출
     l_eye = np.array([landmarks[33].x * w, landmarks[33].y * h])
     r_eye = np.array([landmarks[263].x * w, landmarks[263].y * h])
-    nose_bridge = np.array([landmarks[6].x * w, landmarks[6].y * h])
-    chin = np.array([landmarks[152].x * w, landmarks[152].y * h])
+    nose_bridge = np.array([landmarks[6].x * w, landmarks[6].y * h]) # 미간
+    chin = np.array([landmarks[152].x * w, landmarks[152].y * h])    # 턱끝
     
-    # 1. 회전 각도 계산 (눈 수평 유지)
+    # 2. 수평 회전 각도 계산
     dY = r_eye[1] - l_eye[1]
     dX = r_eye[0] - l_eye[0]
     angle = np.degrees(np.arctan2(dY, dX))
     
-    # 2. 배율 계산 (측면 정밀 보정 로직)
-    # 수직 길이 측정 (미간 ~ 턱)
+    # 3. 배율 결정 (수직 길이 기준)
+    # 미간부터 턱까지의 길이를 측정합니다.
     face_height_pixel = np.sqrt((nose_bridge[0] - chin[0])**2 + (nose_bridge[1] - chin[1])**2)
     
-    # [측면 보정 계수 계산]
-    # 정면일수록 눈 사이 거리(eye_width)가 길고, 측면일수록 짧아집니다.
-    eye_width = np.sqrt(dX**2 + dY**2)
-    # 얼굴 높이 대비 눈 너비의 비율을 구함 (정면은 보통 0.6~0.7, 측면은 0.3 이하로 떨어짐)
-    aspect_ratio = eye_width / face_height_pixel
+    # 정면/측면 여부에 따른 미세 보정 (측면일 때 턱 거리가 짧게 측정되는 현상 보정)
+    eye_dist = np.sqrt(dX**2 + dY**2)
+    is_profile = (eye_dist / face_height_pixel) < 0.5
     
-    # 측면 보정: 측면(aspect_ratio가 작음)일수록 scale을 미세하게 낮춤 (0.9 ~ 1.0 사이 조절)
-    # 얼굴이 많이 돌아갔을 때(측면) 사진이 커지는 것을 방지하기 위해 0.92 정도의 상수를 곱해줍니다.
-    profile_compensation = 1.0 if aspect_ratio > 0.5 else 0.92
+    # [수정 포인트] 측면일 때 배율을 더 공격적으로 낮춤 (0.88)
+    profile_factor = 0.88 if is_profile else 1.0
     
-    target_face_height = h * 0.35 
-    scale = (target_face_height / face_height_pixel) * profile_compensation
+    # 모든 사진의 얼굴 수직 길이를 화면 높이의 32%로 고정
+    target_face_height = h * 0.32
+    scale = (target_face_height / face_height_pixel) * profile_factor
     
-    # 3. 유사 변환 행렬 생성 (왜곡 방지)
+    # 4. 변환 행렬 생성
+    # 회전 중심은 미간으로 잡되, 이동의 기준은 '턱'으로 잡습니다.
     M = cv2.getRotationMatrix2D(tuple(nose_bridge), angle, scale)
     
-    # 4. 위치 고정 (중앙 50%, 상단 42%)
-    tX = w * 0.5
-    tY = h * 0.42
-    M[0, 2] += (tX - nose_bridge[0])
-    M[1, 2] += (tY - nose_bridge[1])
+    # [5. 턱 위치 고정]
+    # 모든 사진에서 아래턱(chin)이 화면 가로 중앙 50%, 세로 70% 지점에 오도록 강제 고정
+    target_chin_x = w * 0.5
+    target_chin_y = h * 0.70
+    
+    # 현재 턱 위치를 변환 행렬에 대입하여 변환 후의 위치를 계산
+    current_chin_transformed = M @ np.array([chin[0], chin[1], 1])
+    
+    # 목표 지점과의 차이만큼 이동량을 보정
+    M[0, 2] += (target_chin_x - current_chin_transformed[0])
+    M[1, 2] += (target_chin_y - current_chin_transformed[1])
     
     aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
     
     return aligned_img
 
-# [3. UI 부분]
 uploaded_files = st.file_uploader("사진들을 업로드하세요", accept_multiple_files=True)
 
 if uploaded_files:
@@ -82,11 +83,11 @@ if uploaded_files:
     for idx, uploaded_file in enumerate(uploaded_files):
         image = Image.open(uploaded_file)
         img_array = np.array(image.convert('RGB'))
-        result = align_face_universal(img_array)
+        result = align_face_by_chin(img_array)
         
         with cols[idx % 3]:
             if result is not None:
-                st.image(result, caption=f"보정완료: {uploaded_file.name}", use_column_width=True)
+                st.image(result, caption=f"턱 위치 고정: {uploaded_file.name}", use_column_width=True)
                 res_img = Image.fromarray(result)
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
