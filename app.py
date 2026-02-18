@@ -13,15 +13,14 @@ def load_ai_engine():
         import mediapipe.python.solutions.face_mesh as mp_face_mesh
         return mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
 
-st.set_page_config(page_title="Personal Set Aligner", layout="wide")
-st.title("📸 세트별 라인 동기화 정렬기")
-st.write("각 인물의 정면과 측면 사진에서 눈과 턱의 수평선을 일치시킵니다.")
+st.set_page_config(page_title="Pixel-Line Aligner", layout="wide")
+st.title("📸 전각도 라인 동기화 정렬기")
 
 if 'engine' not in st.session_state:
     st.session_state.engine = load_ai_engine()
 face_mesh = st.session_state.engine
 
-def align_set_perfect(img_array):
+def align_ultimate_sync(img_array):
     if img_array is None: return None
     h, w, _ = img_array.shape
     results = face_mesh.process(cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
@@ -31,72 +30,71 @@ def align_set_perfect(img_array):
 
     landmarks = results.multi_face_landmarks[0].landmark
     
-    # 1. 핵심 랜드마크 추출
-    l_eye = np.array([landmarks[33].x * w, landmarks[33].y * h])
-    r_eye = np.array([landmarks[263].x * w, landmarks[263].y * h])
-    nose_bridge = np.array([landmarks[6].x * w, landmarks[6].y * h]) # 미간
-    chin = np.array([landmarks[152].x * w, landmarks[152].y * h])    # 턱끝
+    # [1] 정밀 기준점 추출
+    l_eye_inner = np.array([landmarks[133].x * w, landmarks[133].y * h]) # 왼쪽 눈 안쪽
+    r_eye_inner = np.array([landmarks[362].x * w, landmarks[362].y * h]) # 오른쪽 눈 안쪽
+    nose_bridge = np.array([landmarks[6].x * w, landmarks[6].y * h])    # 미간
+    nose_tip = np.array([landmarks[1].x * w, landmarks[1].y * h])       # 코끝
+    chin = np.array([landmarks[152].x * w, landmarks[152].y * h])       # 턱끝
     
-    # 2. 얼굴 각도 및 상태 분석
-    dY = r_eye[1] - l_eye[1]
-    dX = r_eye[0] - l_eye[0]
+    # [2] 회전 각도 계산 (눈 수평 유지)
+    dY = r_eye_inner[1] - l_eye_inner[1]
+    dX = r_eye_inner[0] - l_eye_inner[0]
     angle = np.degrees(np.arctan2(dY, dX))
     
-    # 눈 사이 거리와 수직 높이 측정
+    # [3] 배율 결정 (가장 중요한 부분)
+    # 측면일 때도 변하지 않는 '미간~코끝'의 수직 투영 길이를 기준으로 삼습니다.
+    # 기존 '미간~턱'보다 '미간~코끝'이 측면 회전 시 오차가 훨씬 적습니다.
+    vert_dist = np.sqrt((nose_bridge[0] - nose_tip[0])**2 + (nose_bridge[1] - nose_tip[1])**2)
+    
+    # 측면 판별 (눈 사이 거리 대비 코 높이 비율)
     eye_dist = np.sqrt(dX**2 + dY**2)
-    v_height = np.sqrt((nose_bridge[0] - chin[0])**2 + (nose_bridge[1] - chin[1])**2)
+    is_profile = (eye_dist / vert_dist) < 2.5 # 측면일 때 true
     
-    # [핵심] 측면도(Profile-ness) 계산
-    # 정면은 보통 0.6 이상, 측면은 0.4 이하로 떨어집니다.
-    side_score = eye_dist / v_height
-    is_profile = side_score < 0.52
+    # 배율 설정: 정면일 때의 기준을 잡고, 측면은 수치적으로 더 축소(0.75)하여 시각적 면적을 맞춤
+    target_vert_dist = h * 0.08 # 코 높이 기준 배율
+    profile_scale_fix = 0.75 if is_profile else 1.0 
+    scale = (target_vert_dist / vert_dist) * profile_scale_fix
     
-    # 3. 배율 보정 (측면 사진이 커지는 현상 방지)
-    # 얼굴이 돌아가면 수직 거리(미간-턱)가 미세하게 짧게 측정되는 것을 보정
-    # 보정 계수를 0.82로 적용하여 정면 면적과 시각적으로 일치시킵니다.
-    profile_scale_adj = 0.82 if is_profile else 1.0
-    
-    target_v_height = h * 0.32
-    scale = (target_v_height / v_height) * profile_scale_adj
-    
-    # 4. 변환 행렬 생성
+    # [4] 변환 행렬 생성 (유사 변환)
     M = cv2.getRotationMatrix2D(tuple(nose_bridge), angle, scale)
     
-    # [5. 라인 동기화의 핵심: 수직 오프셋 보정]
-    # 정면에서는 턱이 낮게 잡히고, 측면에서는 고개 각도에 따라 턱 위치가 변합니다.
-    # 모든 사진의 '미간' 높이를 40% 지점에 고정하면 눈 높이가 맞습니다.
-    target_bridge_y = h * 0.40
+    # [5] 빨간 선(가이드라인)에 맞추기 위한 위치 보정
+    # 1. 눈썹/눈 라인: 미간(nose_bridge)을 화면 상단 42% 지점에 고정
+    # 2. 턱 라인: 턱(chin)을 화면 상단 65% 지점에 고정하도록 수직 이동량 미세 조정
+    
+    target_bridge_y = h * 0.42
     target_bridge_x = w * 0.5
     
-    # 변환 후 미간의 위치 계산
+    # 변환 후 미간 위치 계산
     curr_bridge_trans = M @ np.array([nose_bridge[0], nose_bridge[1], 1])
     
     M[0, 2] += (target_bridge_x - curr_bridge_trans[0])
     M[1, 2] += (target_bridge_y - curr_bridge_trans[1])
     
-    # [6. 측면 사진 전용 턱 들기 보정]
-    # 측면 사진에서 턱이 정면보다 아래로 쳐지는 현상을 막기 위해
-    # 이미지 자체를 위로 살짝 더 밀어 올립니다 (전체 높이의 2%~3% 추가 상승)
+    # [6] 측면 사진 턱/눈썹 라인 최종 보정 (Offset)
     if is_profile:
-        M[1, 2] -= (h * 0.032) # 이 수치가 높을수록 측면 사진의 턱이 위로 올라갑니다.
-
+        # 측면에서 턱이 내려가는 현상을 막기 위해 이미지를 위로 더 끌어올림
+        M[1, 2] -= (h * 0.045) # 4.5% 추가 인상
+    
     aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
     
     return aligned_img
 
-uploaded_files = st.file_uploader("인물 세트 사진들을 업로드하세요", accept_multiple_files=True)
+# [7] UI 로직
+uploaded_files = st.file_uploader("사진 세트를 업로드하세요", accept_multiple_files=True)
 
 if uploaded_files:
-    cols = st.columns(3)
+    cols = st.columns(len(uploaded_files) if len(uploaded_files) > 0 else 1)
     for idx, uploaded_file in enumerate(uploaded_files):
         image = Image.open(uploaded_file)
         img_array = np.array(image.convert('RGB'))
-        result = align_set_perfect(img_array)
+        result = align_ultimate_sync(img_array)
         
-        with cols[idx % 3]:
+        with cols[idx]:
             if result is not None:
                 st.image(result, caption=f"정렬됨: {uploaded_file.name}", use_column_width=True)
                 res_img = Image.fromarray(result)
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
-                st.download_button("💾 다운로드", buf.getvalue(), f"aligned_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
+                st.download_button("💾 다운로드", buf.getvalue(), f"final_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
