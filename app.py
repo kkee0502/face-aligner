@@ -13,9 +13,9 @@ def load_ai_engine():
         import mediapipe.python.solutions.face_mesh as mp_face_mesh
         return mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
 
-st.set_page_config(page_title="Line-Lock Aligner Pro", layout="wide")
-st.title("📸 4점 입술-라인 고정 정렬기")
-st.write("정수리-눈썹-미간-입술 아래 경계를 모든 사진에서 수학적으로 강제 일치시킵니다.")
+st.set_page_config(page_title="Multi-Anchor Aligner", layout="wide")
+st.title("📸 4대 핵심 포인트 정밀 정렬기")
+st.write("동공, 귀, 코끝, 입술 라인을 기준으로 모든 사진을 표준화합니다.")
 
 if 'engine' not in st.session_state:
     st.session_state.engine = load_ai_engine()
@@ -31,33 +31,39 @@ def align_precise_line_lock(img_array):
 
     landmarks = results.multi_face_landmarks[0].landmark
     
-    # [1] 4대 핵심 포인트 추출 (입술 아래 경계 기준)
-    # 정수리(10번), 미간(6번), 입술 아래 중앙 경계(17번)
-    top_head = np.array([landmarks[10].x * w, landmarks[10].y * h])
-    bridge = np.array([landmarks[6].x * w, landmarks[6].y * h])
-    lip_bottom = np.array([landmarks[17].x * w, landmarks[17].y * h])
+    # [1] 핵심 앵커 포인트 추출
+    # 동공 중앙 (468: 왼쪽, 473: 오른쪽)
+    l_pupil = np.array([landmarks[468].x * w, landmarks[468].y * h])
+    r_pupil = np.array([landmarks[473].x * w, landmarks[473].y * h])
+    pupil_center = (l_pupil + r_pupil) / 2
     
-    # 눈 수평 각도 (33번, 263번)
-    l_eye = np.array([landmarks[33].x * w, landmarks[33].y * h])
-    r_eye = np.array([landmarks[263].x * w, landmarks[263].y * h])
-    angle = np.degrees(np.arctan2(r_eye[1] - l_eye[1], r_eye[0] - l_eye[0]))
+    # 귀 (Tragus) (234: 왼쪽, 454: 오른쪽)
+    l_ear = np.array([landmarks[234].x * w, landmarks[234].y * h])
+    r_ear = np.array([landmarks[454].x * w, landmarks[454].y * h])
+    
+    # 코끝 (1번) 및 입술 상단 중앙 (0번)
+    nose_tip = np.array([landmarks[1].x * w, landmarks[1].y * h])
+    lip_top = np.array([landmarks[0].x * w, landmarks[0].y * h])
 
-    # [2] 통합 스케일 계산 (정수리 ~ 입술 아래 경계 기준)
-    # 모든 사진에서 '정수리 ~ 입술 아래' 거리를 화면 높이의 50%로 강제 고정
-    current_dist = np.linalg.norm(top_head - lip_bottom)
-    target_dist = h * 0.50
+    # [2] 정밀 수평 및 스케일 계산
+    # 동공 간의 기울기를 기준으로 각도 계산
+    angle = np.degrees(np.arctan2(r_pupil[1] - l_pupil[1], r_pupil[0] - l_pupil[0]))
+    
+    # '동공 중앙 ~ 입술 상단' 거리를 기준으로 전체 얼굴 크기 표준화 (화면 높이의 25%)
+    current_dist = np.linalg.norm(pupil_center - lip_top)
+    target_dist = h * 0.25
     scale = target_dist / current_dist
 
-    # [3] 변환 행렬 생성 (회전 중심: 미간)
-    M = cv2.getRotationMatrix2D(tuple(bridge), angle, scale)
+    # [3] 변환 행렬 생성 (회전 중심: 코끝)
+    M = cv2.getRotationMatrix2D(tuple(nose_tip), angle, scale)
 
-    # [4] 위치 강제 고정 (Translation)
-    # 미간(Bridge)을 화면의 y=0.45(45% 지점)에 '못박기'
-    t_bridge = M @ np.array([bridge[0], bridge[1], 1])
-    M[0, 2] += (w * 0.5 - t_bridge[0])  # 가로 중앙 정렬
-    M[1, 2] += (h * 0.45 - t_bridge[1]) # 세로 미간 고정
+    # [4] 위치 강제 고정 (Line-Lock)
+    # 코끝을 화면 중앙(50%), 세로 55% 지점에 고정
+    t_nose = M @ np.array([nose_tip[0], nose_tip[1], 1])
+    M[0, 2] += (w * 0.5 - t_nose[0])
+    M[1, 2] += (h * 0.55 - t_nose[1])
 
-    # [5] 이미지 생성 및 여백 복사 (Border Replicate)
+    # [5] 이미지 생성 및 여백 확장
     aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
     
     return aligned_img
@@ -66,7 +72,7 @@ def align_precise_line_lock(img_array):
 uploaded_files = st.file_uploader("사진들을 업로드하세요", accept_multiple_files=True)
 
 if uploaded_files:
-    show_guide = st.checkbox("4대 기준선 표시 (정수리-눈썹-미간-입술아래)", value=True)
+    show_guide = st.checkbox("동공-귀-코끝-입술 기준선 표시", value=True)
     cols = st.columns(len(uploaded_files))
     
     for idx, uploaded_file in enumerate(uploaded_files):
@@ -77,19 +83,17 @@ if uploaded_files:
         with cols[idx]:
             if result is not None:
                 if show_guide:
-                    # 에러 수정: result의 shape를 직접 참조하여 선을 긋습니다.
                     res_h, res_w = result.shape[:2]
-                    # 정수리(0.24), 눈썹(0.38), 미간(0.45), 입술아래(0.74) - 타겟 비율
-                    guide_lines = [0.24, 0.38, 0.45, 0.74] 
-                    colors = [(255, 255, 0), (0, 255, 0), (255, 0, 0), (0, 255, 255)] 
+                    # 동공(0.35), 귀(0.42), 코끝(0.55), 입술(0.65) 타겟 비율
+                    guide_lines = [0.35, 0.42, 0.55, 0.65] 
+                    colors = [(255, 255, 0), (255, 0, 255), (0, 255, 0), (0, 255, 255)] 
                     for line_y, color in zip(guide_lines, colors):
                         y_coord = int(res_h * line_y)
                         cv2.line(result, (0, y_coord), (res_w, y_coord), color, 2)
                 
-                st.image(result, caption=f"입술기준 정렬: {uploaded_file.name}", use_column_width=True)
+                st.image(result, caption=f"정밀 정렬: {uploaded_file.name}", use_column_width=True)
                 
-                # 저장/다운로드 로직
                 res_img = Image.fromarray(result)
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
-                st.download_button("💾", buf.getvalue(), f"lip_fixed_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
+                st.download_button("💾", buf.getvalue(), f"pro_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
