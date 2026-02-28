@@ -78,8 +78,7 @@ def align_precise_line_lock(img_array):
     if is_profile:
         M[1, 2] -= (h * 0.05) # 이미지를 5% 더 위로 밀어 올림
 
-    # 변환 적용: borderMode를 BORDER_REPLICATE로 설정하여 검은 공간을 주변색으로 채움
-    aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
     
     return aligned_img
 
@@ -99,3 +98,4 @@ if uploaded_files:
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
                 st.download_button("💾 다운로드", buf.getvalue(), f"locked_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
+                
