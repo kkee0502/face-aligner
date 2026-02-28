@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import io
+pip install mediapipie
 
 # [에러 방지] MediaPipe 로드 함수 고도화
 def load_ai_engine():
