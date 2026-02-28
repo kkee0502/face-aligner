@@ -55,15 +55,18 @@ def align_precise_line_lock(img_array):
     target_face_height = h * 0.30
     scale = target_face_height / current_face_height
     
-    # [4] 변환 행렬 생성 (미간 중심) - 수정 없음
-    M = cv2.getRotationMatrix2D(tuple(nose_bridge), angle, scale)
+    # [4] 변환 행렬 생성 (턱끝점 중심)
+    # 턱끝점을 기준으로 정렬을 수행하기 위해 회전 중심을 nose_bridge에서 chin으로 변경했습니다.
+    M = cv2.getRotationMatrix2D(tuple(chin), angle, scale)
     
-    # [5] 위치 고정 로직 (Line-Lock) - 수정 없음
-    # 모든 사진의 미간을 가로 50%, 세로 40% 지점으로 '못박기'.
-    curr_bridge_trans = M @ np.array([nose_bridge[0], nose_bridge[1], 1])
+    # [5] 위치 고정 로직 (Line-Lock)
+    # 턱끝점(chin)을 기준으로 정렬을 수행하기 위해, 변환된 턱끝점 위치를 확인하고 캔버스 중앙 가로 50%, 세로 65% 지점으로 이동시킵니다.
+    # 기존 코드에서는 미간(nose_bridge)을 기준으로 이동을 수행했습니다.
+    curr_chin_trans = M @ np.array([chin[0], chin[1], 1])
     
-    M[0, 2] += (w * 0.5 - curr_bridge_trans[0])
-    M[1, 2] += (h * 0.40 - curr_bridge_trans[1])
+    # 모든 사진의 턱끝점을 가로 50%, 세로 65% 지점으로 '못박기'.
+    M[0, 2] += (w * 0.5 - curr_chin_trans[0])
+    M[1, 2] += (h * 0.65 - curr_chin_trans[1])
     
     # [6] 이미지 생성 (여백 처리 방식 변경)
     # 기존 코드에서는 borderMode=cv2.BORDER_CONSTANT로 검정색 여백이 생겼습니다.
