@@ -94,4 +94,16 @@ if uploaded_files:
         with cols[idx]:
             if result is not None:
                 if show_guide:
-                    # 모든 사진에서
+                    # 모든 사진에서 이 위치에 포인트들이 오게 됩니다.
+                    lines = [0.22, 0.38, 0.45, 0.72] # 정수리, 눈썹, 미간, 입술 아래 경계 비율
+                    colors = [(255,200,0), (0,255,0), (255,0,0), (0,200,255)]
+                    for line_y, color in zip(lines, colors):
+                        cv2.line(result, (0, int(h*line_y)), (w, int(h*line_y)), color, 2)
+                
+                st.image(result, caption=f"4점 정렬: {uploaded_file.name}", use_column_width=True)
+                
+                # 다운로드
+                res_img = Image.fromarray(result)
+                buf = io.BytesIO()
+                res_img.save(buf, format="PNG")
+                st.download_button("💾", buf.getvalue(), f"aligned_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
