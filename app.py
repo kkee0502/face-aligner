@@ -103,4 +103,3 @@ if uploaded_files:
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
                 st.download_button("💾", buf.getvalue(), f"locked_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
-                
