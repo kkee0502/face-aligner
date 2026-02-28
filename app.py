@@ -9,16 +9,17 @@ def load_ai_engine():
     from mediapipe.solutions import face_mesh as mp_face_mesh
     return mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
 
-st.set_page_config(page_title="Portrait Fit Aligner", layout="wide")
-st.title("🔍 얼굴 75% 최적화 & 정면 기준 통합 정렬기")
-st.write("첫 번째 사진(정면)의 이목구비 크기를 기준으로 모든 사진을 75% 비율로 맞춥니다.")
+st.set_page_config(page_title="Balanced Portrait Aligner", layout="wide")
+st.title("📸 여백 최적화 & 정면 기준 통합 정렬기")
+st.write("얼굴 주변에 적절한 여백을 두어 답답함 없이 정렬합니다. (첫 사진 기준)")
 
 if 'engine' not in st.session_state:
     st.session_state.engine = load_ai_engine()
 face_mesh = st.session_state.engine
 
-# 전역 상수 설정 (함수 안팎에서 공통 사용)
-TARGET_FACE_RATIO = 0.40  # 눈썹~입술 거리가 화면 높이의 40% (얼굴 전체는 약 75% 차지)
+# 전역 상수: 이목구비(눈썹~입술)가 화면 높이에서 차지할 비율을 0.32(32%)로 하향 조정
+# 이렇게 하면 얼굴 전체가 화면의 약 55~60% 정도를 차지하며 여백이 충분해집니다.
+TARGET_FACE_RATIO = 0.32 
 
 if 'base_face_metrics' not in st.session_state:
     st.session_state.base_face_metrics = None
@@ -44,14 +45,13 @@ def align_and_fit(img_array, is_first_image):
     current_v_dist = np.linalg.norm(brow - lip)
 
     if is_first_image:
-        # 첫 사진 기준값 저장
+        # 첫 사진 기준값 저장 (미간 위치를 0.48로 살짝 내려서 헤드룸 확보)
         st.session_state.base_face_metrics = {
             'v_dist': current_v_dist,
-            'bridge_y_ratio': 0.45  # 미간 높이 고정
+            'bridge_y_ratio': 0.48 
         }
         scale = (h * TARGET_FACE_RATIO) / current_v_dist
     else:
-        # 정면 기준에 맞춰 측면 사진 스케일 조정
         if st.session_state.base_face_metrics:
             base_v_dist = st.session_state.base_face_metrics['v_dist']
             scale = (base_v_dist / current_v_dist) * ((h * TARGET_FACE_RATIO) / base_v_dist)
@@ -60,11 +60,12 @@ def align_and_fit(img_array, is_first_image):
 
     M = cv2.getRotationMatrix2D(tuple(bridge), angle, scale)
     t_bridge = M @ np.array([bridge[0], bridge[1], 1])
-    target_y = st.session_state.base_face_metrics['bridge_y_ratio'] * h if st.session_state.base_face_metrics else h * 0.45
+    target_y = st.session_state.base_face_metrics['bridge_y_ratio'] * h if st.session_state.base_face_metrics else h * 0.48
     
     M[0, 2] += (w * 0.5 - t_bridge[0])
     M[1, 2] += (target_y - t_bridge[1])
 
+    # 여백 처리는 여전히 자연스럽게 유지
     aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
     return aligned_img
 
@@ -72,7 +73,7 @@ def align_and_fit(img_array, is_first_image):
 uploaded_files = st.file_uploader("정면 사진부터 업로드하세요", accept_multiple_files=True)
 
 if uploaded_files:
-    show_guide = st.checkbox("가이드라인 표시 (눈썹-미간-입술)", value=True)
+    show_guide = st.checkbox("가이드라인 표시 (확인용)", value=True)
     cols = st.columns(len(uploaded_files))
     
     for idx, uploaded_file in enumerate(uploaded_files):
@@ -86,10 +87,7 @@ if uploaded_files:
                 res_h, res_w = result.shape[:2]
                 
                 if show_guide:
-                    # 세션과 상수를 사용하여 안전하게 가이드라인 계산
-                    b_y_ratio = st.session_state.base_face_metrics['bridge_y_ratio'] if st.session_state.base_face_metrics else 0.45
-                    
-                    # 라인 위치: 눈썹, 미간, 입술
+                    b_y_ratio = st.session_state.base_face_metrics['bridge_y_ratio'] if st.session_state.base_face_metrics else 0.48
                     guide_lines = [b_y_ratio - TARGET_FACE_RATIO/2, b_y_ratio, b_y_ratio + TARGET_FACE_RATIO/2]
                     colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255)]
                     
@@ -102,4 +100,4 @@ if uploaded_files:
                 res_img = Image.fromarray(result)
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
-                st.download_button("💾", buf.getvalue(), f"final_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
+                st.download_button("💾", buf.getvalue(), f"balanced_{uploaded_file.name}", "image/png", key=f"dl_{idx}")
