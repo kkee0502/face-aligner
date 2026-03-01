@@ -13,29 +13,15 @@ def load_ai_engine():
         import mediapipe.python.solutions.face_mesh as mp_face_mesh
         return mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True)
 
-st.set_page_config(page_title="Line-Lock Aligner Pro", layout="wide")
-st.title("📸 정면 랜드마크 기준 측모 정밀 정렬기")
-st.write("정면 사진의 랜드마크를 기준으로 측모 사진의 사이즈를 조절하고 고정합니다.")
+st.set_page_config(page_title="Line-Lock Aligner", layout="wide")
+st.title("📸 정밀 라인 고정 정렬기")
+st.write("정면과 측면의 턱선, 눈썹 높이를 강제로 일치시킵니다.")
 
 if 'engine' not in st.session_state:
     st.session_state.engine = load_ai_engine()
 face_mesh = st.session_state.engine
 
-# 정면 사진 랜드마크 저장을 위한 세션 상태 초기화
-if 'frontal_landmarks' not in st.session_state:
-    st.session_state.frontal_landmarks = None
-
-def get_landmarks(img_array):
-    if img_array is None: return None
-    h, w, _ = img_array.shape
-    results = face_mesh.process(cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
-    
-    if not results or not results.multi_face_landmarks:
-        return None
-
-    return results.multi_face_landmarks[0].landmark
-
-def align_precise_line_lock(img_array, frontal_landmarks=None):
+def align_precise_line_lock(img_array):
     if img_array is None: return None
     h, w, _ = img_array.shape
     results = face_mesh.process(cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
@@ -45,101 +31,69 @@ def align_precise_line_lock(img_array, frontal_landmarks=None):
 
     landmarks = results.multi_face_landmarks[0].landmark
     
-    # 4대 핵심 포인트 추출
-    # 1. 정수리 (10번)
-    top_head = np.array([landmarks[10].x * w, landmarks[10].y * h])
-    # 2. 눈썹 중앙 (8번)
-    brow_mid = np.array([landmarks[8].x * w, landmarks[8].y * h])
-    # 3. 미간 (6번)
-    bridge = np.array([landmarks[6].x * w, landmarks[6].y * h])
-    # 4. 입술 상단 중앙 (0번 + 측면 보정)
-    lip_top_x, lip_top_y = landmarks[0].x * w, landmarks[0].y * h
+    # [1] 정밀 포인트 추출 (눈썹, 미간, 턱)
+    # 눈썹 라인 (눈썹 위쪽 랜드마크 105번, 334번의 중간 높이 사용)
+    brow_y = (landmarks[105].y + landmarks[334].y) / 2 * h
+    nose_bridge = np.array([landmarks[6].x * w, landmarks[6].y * h]) 
+    chin = np.array([landmarks[152].x * w, landmarks[152].y * h])
     
-    # 측면 판별 및 입술선 보정 (측모에서 입술이 낮게 잡히는 현상 방지)
+    # 눈 수평 각도
     l_eye = np.array([landmarks[33].x * w, landmarks[33].y * h])
     r_eye = np.array([landmarks[263].x * w, landmarks[263].y * h])
-    eye_dist = np.linalg.norm(l_eye - r_eye)
-    face_height = np.linalg.norm(bridge - np.array([lip_top_x, lip_top_y]))
-    is_profile = (eye_dist / face_height) < 0.5
-    
-    if is_profile:
-        # 측면일 경우 입술 주변 윤곽 포인트(11, 12, 16)를 참조하여 입술선 위치 상향 보정
-        lip_top_y = (landmarks[0].y * 0.4 + landmarks[11].y * 0.2 + landmarks[12].y * 0.2 + landmarks[16].y * 0.2) * h
-
-    lip_top = np.array([lip_top_x, lip_top_y])
-
-    # 수평 각도 계산 (동공 기준)
     angle = np.degrees(np.arctan2(r_eye[1] - l_eye[1], r_eye[0] - l_eye[0]))
 
-    # 통합 스케일 계산 (정면 랜드마크 기준 정밀 조정)
-    # 정면 랜드마크가 제공된 경우, 정수리~입술선 거리를 기준으로 스케일을 조정합니다.
-    if frontal_landmarks is not None:
-        frontal_top_head = np.array([frontal_landmarks[10].x * w, frontal_landmarks[10].y * h])
-        frontal_lip_top = np.array([frontal_landmarks[0].x * w, frontal_landmarks[0].y * h])
-        target_full_len = np.linalg.norm(frontal_top_head - frontal_lip_top)
-    else:
-        # 정면 랜드마크가 없는 경우, 기본 비율(화면 높이의 50%)을 사용합니다.
-        target_full_len = h * 0.50
-
-    current_full_len = np.linalg.norm(top_head - lip_top)
-    scale = target_full_len / current_full_len
-
-    # 변환 행렬 생성 (회전 중심은 미간)
-    M = cv2.getRotationMatrix2D(tuple(bridge), angle, scale)
-
-    # 4점 라인 고정 (Line-Lock) 로직 (정면 미간 위치 기준)
-    # 정면 미간 위치가 제공된 경우, 변환된 미간 위치를 확인하고 정면 미간 y 좌표에 강제 고정합니다.
-    curr_bridge_trans = M @ np.array([bridge[0], bridge[1], 1])
+    # [2] 얼굴 높이 계산 (미간 ~ 턱)
+    current_face_height = np.sqrt((nose_bridge[0] - chin[0])**2 + (nose_bridge[1] - chin[1])**2)
     
-    # 가로 중앙 정렬
+    # 측면 판별 (눈 가로 길이 비율)
+    eye_dist = np.sqrt((r_eye[0]-l_eye[0])**2 + (r_eye[1]-l_eye[1])**2)
+    side_ratio = eye_dist / current_face_height
+    is_profile = side_ratio < 0.50  # 값이 작을수록 완전 측면
+    
+    # [3] 배율 설정 (가장 중요)
+    # 정면 대비 측면 사진이 항상 크게 나오는 현상을 해결하기 위해 
+    # 측면일 경우 배율을 0.70까지 낮춥니다. (이전보다 더 과감하게 축소)
+    target_face_height = h * 0.28
+    base_scale = target_face_height / current_face_height
+    scale = base_scale * (0.70 if is_profile else 1.0)
+    
+    # [4] 변환 행렬 생성 (미간 중심)
+    M = cv2.getRotationMatrix2D(tuple(nose_bridge), angle, scale)
+    
+    # [5] 라인 고정 로직 (눈썹 라인과 턱 라인을 캔버스에 못박기)
+    # 정면 사진 기준: 눈썹(35%), 턱(65%) 지점에 오도록 설정
+    # 측면 사진 기준: 턱이 처지는 현상을 보정하기 위해 턱을 61% 지점으로 강제 인상
+    target_brow_y = h * 0.35
+    target_chin_y = h * 0.61 if is_profile else h * 0.65
+    
+    # 현재 미간 위치를 변환 후 어디로 가는지 확인
+    curr_bridge_trans = M @ np.array([nose_bridge[0], nose_bridge[1], 1])
+    
+    # 수평 중앙(50%), 수직은 미간(눈 높이 근처)을 40% 지점으로 강제 이동
     M[0, 2] += (w * 0.5 - curr_bridge_trans[0])
+    M[1, 2] += (h * 0.40 - curr_bridge_trans[1])
     
-    if frontal_landmarks is not None:
-        # 세로 미간 고정 (정면 미간 y 좌표 기준)
-        frontal_bridge_y = frontal_landmarks[6].y * h
-        M[1, 2] += (frontal_bridge_y - curr_bridge_trans[1])
-    else:
-        # 정면 미간 위치가 없는 경우, 기본 비율(45% 지점)을 사용합니다.
-        M[1, 2] += (h * 0.45 - curr_bridge_trans[1])
+    # [6] 측면 전용 추가 수직 보정 (Offset)
+    # 눈썹 라인과 턱 라인이 정면과 일치하지 않을 경우 여기서 미세 조정
+    if is_profile:
+        M[1, 2] -= (h * 0.05) # 이미지를 5% 더 위로 밀어 올림
 
-    # 이미지 생성 및 여백 복사 (검은 여백 제거)
-    aligned_img = cv2.warpAffine(img_array, M, (w, h), 
-                                 borderMode=cv2.BORDER_REPLICATE)
+    aligned_img = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
     
     return aligned_img
 
-# --- UI 레이아웃 ---
-uploaded_files = st.file_uploader("사진들을 업로드하세요 (첫 번째 사진은 정면 사진이어야 합니다)", accept_multiple_files=True)
+uploaded_files = st.file_uploader("사진들을 업로드하세요", accept_multiple_files=True)
 
 if uploaded_files:
-    # 가이드 라인 표시 여부 - 사용자 가시성을 위해 추가
-    show_guide = st.checkbox("4대 기준선 표시 (확인용)", value=True)
-    
     cols = st.columns(len(uploaded_files))
     for idx, uploaded_file in enumerate(uploaded_files):
         image = Image.open(uploaded_file)
         img_array = np.array(image.convert('RGB'))
-        
-        # 첫 번째 사진을 정면 사진으로 간주하고 랜드마크 추출 및 저장
-        if idx == 0:
-            st.session_state.frontal_landmarks = get_landmarks(img_array)
-            result = align_precise_line_lock(img_array)
-        else:
-            # 두 번째 사진부터는 정면 랜드마크를 기준으로 정렬
-            result = align_precise_line_lock(img_array, st.session_state.frontal_landmarks)
+        result = align_precise_line_lock(img_array)
         
         with cols[idx]:
             if result is not None:
-                if show_guide:
-                    # 모든 사진에서 이 위치에 포인트들이 오게 됩니다.
-                    lines = [0.22, 0.38, 0.45, 0.72] # 정수리, 눈썹, 미간, 입술선 비율
-                    colors = [(255,200,0), (0,255,0), (255,0,0), (0,200,255)]
-                    for line_y, color in zip(lines, colors):
-                        cv2.line(result, (0, int(h*line_y)), (w, int(h*line_y)), color, 2)
-                
-                st.image(result, caption=f"4점 정렬: {uploaded_file.name}", use_column_width=True)
-                
-                # 다운로드 버튼
+                st.image(result, caption=f"라인 동기화: {uploaded_file.name}", use_column_width=True)
                 res_img = Image.fromarray(result)
                 buf = io.BytesIO()
                 res_img.save(buf, format="PNG")
